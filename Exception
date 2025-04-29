@@ -1,0 +1,178 @@
+import React, { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { Container, Row, Col, Form } from 'react-bootstrap';
+import { useNavigate, Link } from 'react-router-dom';
+import { toast, ToastContainer } from 'react-toastify';
+import axios from 'axios';
+import 'react-toastify/dist/ReactToastify.css';
+import Button from './Components/Button';
+import apiBaselM1 from './Components/ApiBaselM1';
+
+// Custom exception classes for better error categorization
+class AuthenticationException extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'AuthenticationException';
+    }
+}
+
+class NetworkException extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'NetworkException';
+    }
+}
+
+class ServiceUnavailableException extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ServiceUnavailableException';
+    }
+}
+
+function Login() {
+    const { 
+        register, 
+        handleSubmit, 
+        formState: { errors } 
+    } = useForm();
+    
+    const [loginError, setLoginError] = useState(null);
+    const [usernameError, setUsernameError] = useState(null);
+    const [passwordError, setPasswordError] = useState(null);
+    const [showPassword, setShowPassword] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    
+    const navigate = useNavigate();
+    const [toastId, setToastId] = useState(null);
+
+    const handleApiError = (error) => {
+        if (error.response) {
+            // The request was made and the server responded with a status code
+            const { status, data } = error.response;
+            
+            if (status === 400) {
+                if (data.errors && data.errors[0].code === 'FvQ1') {
+                    throw new AuthenticationException('Username is invalid');
+                } else if (data.errors && data.errors[0].message === 'Password is required') {
+                    throw new AuthenticationException('Password is required');
+                } else if (data.message === 'Password Incorrect') {
+                    throw new AuthenticationException('Password is incorrect');
+                }
+            } else if (status === 401) {
+                throw new AuthenticationException('Invalid credentials');
+            } else if (status === 500) {
+                throw new Error('Internal server error');
+            } else if (status === 503) {
+                throw new ServiceUnavailableException('Service temporarily unavailable');
+            }
+        } else if (error.request) {
+            // The request was made but no response was received
+            throw new NetworkException('Network error. Please check your connection.');
+        } else {
+            // Something happened in setting up the request
+            throw new Error('An unexpected error occurred');
+        }
+    };
+
+    const onSubmit = async (data) => {
+        setIsLoading(true);
+        setLoginError(null);
+        setUsernameError(null);
+        setPasswordError(null);
+
+        try {
+            const response = await axios.post(
+                `${apiBaselM1}/terregate/v1/auth/login`,
+                {
+                    username: data.username,
+                    password: data.password
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 10000 // 10 seconds timeout
+                }
+            );
+
+            if (response.data.status === 200 && response.data.message === 'logged in successfully') {
+                if (toastId) {
+                    toast.update(toastId, {
+                        render: 'Logged in successfully',
+                        type: 'success',
+                        isLoading: false,
+                        autoClose: 5000
+                    });
+                } else {
+                    const id = toast.success('Logged in successfully');
+                    setToastId(id);
+                }
+
+                sessionStorage.setItem('isLoggedIn', true);
+                sessionStorage.setItem('userData', JSON.stringify(data));
+
+                setTimeout(() => {
+                    navigate('/dashboard', { replace: true });
+                }, 1000);
+            }
+        } catch (error) {
+            try {
+                handleApiError(error);
+            } catch (exception) {
+                setIsLoading(false);
+                
+                // Handle different types of exceptions appropriately
+                if (exception instanceof AuthenticationException) {
+                    if (exception.message.includes('Username')) {
+                        setUsernameError(exception.message);
+                    } else if (exception.message.includes('Password')) {
+                        setPasswordError(exception.message);
+                    } else {
+                        setLoginError(exception.message);
+                    }
+                } 
+                else if (exception instanceof NetworkException) {
+                    setLoginError(exception.message);
+                    toast.error(exception.message, { autoClose: false });
+                }
+                else if (exception instanceof ServiceUnavailableException) {
+                    setLoginError(exception.message);
+                    toast.warn(exception.message, { autoClose: false });
+                }
+                else {
+                    setLoginError('An unexpected error occurred. Please try again.');
+                    console.error('Unexpected error:', exception);
+                }
+
+                if (toastId) {
+                    toast.update(toastId, {
+                        render: loginError || exception.message || 'Login failed',
+                        type: 'error',
+                        isLoading: false,
+                        autoClose: 5000
+                    });
+                } else {
+                    const id = toast.error(loginError || exception.message || 'Login failed');
+                    setToastId(id);
+                }
+            }
+        }
+    };
+
+    return (
+        <Container className="mt-5">
+            <Row className="justify-content-center">
+                <Col xs={12} md={6} className="bg-white shadow rounded p-4">
+                    <h2 className="text-center mb-4">Login</h2>
+                    <form onSubmit={handleSubmit(onSubmit)} className="d-flex flex-column align-items-center">
+                        {/* ... (rest of the JSX remains the same as in previous example) ... */}
+                    </form>
+                </Col>
+            </Row>
+            <ToastContainer />
+        </Container>
+    );
+}
+
+export default Login;
