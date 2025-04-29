@@ -1,0 +1,197 @@
+import React, { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { Container, Row, Col, Form } from 'react-bootstrap';
+import { useNavigate, Link } from 'react-router-dom';
+import { toast, ToastContainer } from 'react-toastify';
+import axios from 'axios';
+import 'react-toastify/dist/ReactToastify.css';
+import Button from './Components/Button';
+import apiBaselM1 from './Components/ApiBaselM1';
+
+function Login() {
+    const { 
+        register, 
+        handleSubmit, 
+        formState: { errors } 
+    } = useForm();
+    
+    const [loginError, setLoginError] = useState(null);
+    const [usernameError, setUsernameError] = useState(null);
+    const [passwordError, setPasswordError] = useState(null);
+    const [showPassword, setShowPassword] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    
+    const navigate = useNavigate();
+    const [toastId, setToastId] = useState(null);
+
+    const onSubmit = async (data) => {
+        setIsLoading(true);
+        setLoginError(null);
+        setUsernameError(null);
+        setPasswordError(null);
+
+        try {
+            const response = await axios.post(
+                `${apiBaselM1}/terregate/v1/auth/login`,
+                {
+                    username: data.username,
+                    password: data.password
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (response.data.status === 200 && response.data.message === 'logged in successfully') {
+                if (toastId) {
+                    toast.update(toastId, {
+                        render: 'Logged in successfully',
+                        type: 'success',
+                        isLoading: false,
+                        autoClose: 5000
+                    });
+                } else {
+                    const id = toast.success('Logged in successfully');
+                    setToastId(id);
+                }
+
+                sessionStorage.setItem('isLoggedIn', true);
+                sessionStorage.setItem('userData', JSON.stringify(data));
+
+                setTimeout(() => {
+                    navigate('/dashboard', { replace: true });
+                }, 1000);
+            }
+        } catch (error) {
+            setIsLoading(false);
+            
+            if (error.response) {
+                const { message, errors: apiErrors } = error.response.data;
+
+                if (message === 'Bad Request') {
+                    if (apiErrors && apiErrors[0].code === 'FvQ1') {
+                        setUsernameError('Username is invalid');
+                    } else if (apiErrors && apiErrors[0].message === 'Password is required') {
+                        setPasswordError('Password is required');
+                    }
+                } else if (message === 'Password Incorrect') {
+                    setPasswordError('Password is incorrect');
+                } else {
+                    setLoginError(message || 'Login failed');
+                }
+            } else if (error.request) {
+                setLoginError('No response from server. Please try again later.');
+            } else {
+                setLoginError('An unexpected error occurred. Please try again.');
+            }
+
+            if (toastId) {
+                toast.update(toastId, {
+                    render: loginError || 'Login failed',
+                    type: 'error',
+                    isLoading: false,
+                    autoClose: 5000
+                });
+            } else {
+                const id = toast.error(loginError || 'Login failed');
+                setToastId(id);
+            }
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <Container className="mt-5">
+            <Row className="justify-content-center">
+                <Col xs={12} md={6} className="bg-white shadow rounded p-4">
+                    <h2 className="text-center mb-4">Login</h2>
+                    <form onSubmit={handleSubmit(onSubmit)} className="d-flex flex-column align-items-center">
+                        <Form.Group className="mb-3 w-75" controlId="formBasicUsername">
+                            <Form.Label>Username</Form.Label>
+                            <Form.Control
+                                type="text"
+                                placeholder="Enter username"
+                                {...register("username", { required: "Username is required" })}
+                                isInvalid={!!errors.username || !!usernameError}
+                                onFocus={() => setUsernameError(null)}
+                            />
+                            {errors.username && (
+                                <Form.Text className="text-danger">
+                                    {errors.username.message}
+                                </Form.Text>
+                            )}
+                            {usernameError && (
+                                <Form.Text className="text-danger">
+                                    {usernameError}
+                                </Form.Text>
+                            )}
+                        </Form.Group>
+
+                        <Form.Group className="mb-3 w-75 position-relative" controlId="formBasicPassword">
+                            <Form.Label>Password</Form.Label>
+                            <Form.Control
+                                type={showPassword ? "text" : "password"}
+                                placeholder="Enter password"
+                                {...register("password", { 
+                                    required: "Password is required", 
+                                    minLength: { 
+                                        value: 8, 
+                                        message: "Password must be at least 8 characters" 
+                                    } 
+                                })}
+                                isInvalid={!!errors.password || !!passwordError}
+                                onFocus={() => setPasswordError(null)}
+                            />
+                            <Form.Check
+                                type="checkbox"
+                                label="Show password"
+                                className="position-absolute top-0 end-0 translate-y mt-4 me-2"
+                                checked={showPassword}
+                                onChange={() => setShowPassword(!showPassword)}
+                            />
+                            {errors.password && (
+                                <Form.Text className="text-danger">
+                                    {errors.password.message}
+                                </Form.Text>
+                            )}
+                            {passwordError && (
+                                <Form.Text className="text-danger">
+                                    {passwordError}
+                                </Form.Text>
+                            )}
+                        </Form.Group>
+
+                        <Button 
+                            variant="primary" 
+                            label="Login" 
+                            type="submit" 
+                            className="w-75"
+                            disabled={isLoading}
+                        >
+                            {isLoading ? 'Logging in...' : 'Login'}
+                        </Button>
+
+                        {loginError && (
+                            <p className="text-danger text-center mb-4">
+                                {loginError}
+                            </p>
+                        )}
+
+                        <p className="text-center mt-2">
+                            Not registered yet?{' '}
+                            <Link to="/register" className="text-primary">
+                                Sign up
+                            </Link>
+                        </p>
+                    </form>
+                </Col>
+            </Row>
+            <ToastContainer />
+        </Container>
+    );
+}
+
+export default Login;
