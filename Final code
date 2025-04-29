@@ -1,0 +1,352 @@
+import React, { useState, useRef } from 'react';
+import { useForm } from 'react-hook-form';
+import { Container, Row, Col, Form, Spinner } from 'react-bootstrap';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
+import { toast, ToastContainer } from 'react-toastify';
+import axios from 'axios';
+import 'react-toastify/dist/ReactToastify.css';
+import Button from './Components/Button';
+import apiBaselM1 from './Components/ApiBaselM1';
+
+// Custom exception hierarchy
+class LoginException extends Error {
+  constructor(message, userFriendlyMessage = 'Login failed. Please try again.') {
+    super(message);
+    this.name = this.constructor.name;
+    this.userFriendlyMessage = userFriendlyMessage;
+  }
+}
+
+class AuthenticationException extends LoginException {
+  constructor(message, field = null) {
+    super(message, message); // Use technical message as user-friendly message
+    this.field = field;
+  }
+}
+
+class NetworkException extends LoginException {
+  constructor() {
+    super('Network error occurred', 'Network unavailable. Please check your connection.');
+  }
+}
+
+class ServiceUnavailableException extends LoginException {
+  constructor() {
+    super('Service unavailable', 'Service is temporarily unavailable. Please try again later.');
+  }
+}
+
+class RateLimitException extends LoginException {
+  constructor(retryAfter) {
+    super('Rate limit exceeded', `Too many attempts. Please try again in ${retryAfter} seconds.`);
+    this.retryAfter = retryAfter;
+  }
+}
+
+function Login() {
+  const { 
+    register, 
+    handleSubmit, 
+    formState: { errors, isDirty, isValid },
+    reset
+  } = useForm({ mode: 'onChange' });
+  
+  const [loginError, setLoginError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [showPassword, setShowPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDisabled, setIsDisabled] = useState(false);
+  const [retryAfter, setRetryAfter] = useState(null);
+  
+  const navigate = useNavigate();
+  const location = useLocation();
+  const toastIdRef = useRef(null);
+  const submitCountRef = useRef(0);
+
+  // Reset all errors when form changes
+  const handleFormChange = () => {
+    if (loginError || Object.keys(fieldErrors).length > 0) {
+      setLoginError(null);
+      setFieldErrors({});
+    }
+  };
+
+  const showToast = (message, type = 'error', options = {}) => {
+    if (toastIdRef.current) {
+      toast.update(toastIdRef.current, {
+        render: message,
+        type,
+        isLoading: false,
+        ...options
+      });
+    } else {
+      toastIdRef.current = toast[type](message, options);
+    }
+  };
+
+  const handleApiError = (error) => {
+    if (!error.response) {
+      if (error.code === 'ECONNABORTED') {
+        throw new NetworkException();
+      }
+      throw new Error('Failed to connect to server');
+    }
+
+    const { status, data, headers } = error.response;
+    
+    // Handle rate limiting
+    if (status === 429) {
+      const retryAfter = headers['retry-after'] || 60;
+      throw new RateLimitException(retryAfter);
+    }
+
+    // Handle service unavailable
+    if (status === 503) {
+      throw new ServiceUnavailableException();
+    }
+
+    // Handle authentication errors
+    if (status === 400 || status === 401) {
+      if (data?.errors) {
+        const firstError = data.errors[0];
+        if (firstError.code === 'FvQ1') {
+          throw new AuthenticationException('Invalid username', 'username');
+        }
+        if (firstError.message === 'Password is required') {
+          throw new AuthenticationException('Password is required', 'password');
+        }
+      }
+      if (data?.message === 'Password Incorrect') {
+        throw new AuthenticationException('Incorrect password', 'password');
+      }
+    }
+
+    // Handle other HTTP errors
+    if (status >= 500) {
+      throw new Error('Server error occurred');
+    }
+
+    throw new Error(data?.message || 'Unknown error occurred');
+  };
+
+  const onSubmit = async (data) => {
+    if (isDisabled) return;
+    
+    submitCountRef.current += 1;
+    setIsLoading(true);
+    setLoginError(null);
+    setFieldErrors({});
+
+    try {
+      const response = await axios.post(
+        `${apiBaselM1}/terregate/v1/auth/login`,
+        {
+          username: data.username,
+          password: data.password
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Request-Id': crypto.randomUUID() // For request tracing
+          },
+          timeout: 15000,
+          validateStatus: (status) => status < 500 // Don't throw for 4xx errors
+        }
+      );
+
+      // Handle successful login
+      if (response.data.status === 200 && response.data.message === 'logged in successfully') {
+        showToast('Logged in successfully', 'success', { autoClose: 2000 });
+        
+        // Store session data securely
+        sessionStorage.setItem('authToken', response.data.token);
+        sessionStorage.setItem('userData', JSON.stringify({
+          username: data.username,
+          lastLogin: new Date().toISOString()
+        }));
+
+        // Redirect to dashboard or previous location
+        const from = location.state?.from?.pathname || '/dashboard';
+        setTimeout(() => navigate(from, { replace: true }), 1000);
+        return;
+      }
+
+      // Handle API responses that aren't successful
+      throw new Error(response.data.message || 'Login failed');
+    } catch (error) {
+      try {
+        handleApiError(error);
+      } catch (exception) {
+        // Log technical details for debugging
+        console.error('Login error:', {
+          error: exception,
+          stack: exception.stack,
+          submitCount: submitCountRef.current
+        });
+
+        // User-friendly error handling
+        if (exception instanceof AuthenticationException) {
+          if (exception.field) {
+            setFieldErrors(prev => ({
+              ...prev,
+              [exception.field]: exception.userFriendlyMessage
+            }));
+          } else {
+            setLoginError(exception.userFriendlyMessage);
+          }
+        } 
+        else if (exception instanceof RateLimitException) {
+          setIsDisabled(true);
+          setRetryAfter(exception.retryAfter);
+          const interval = setInterval(() => {
+            setRetryAfter(prev => {
+              if (prev <= 1) {
+                clearInterval(interval);
+                setIsDisabled(false);
+                return null;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+        else if (exception instanceof NetworkException || 
+                exception instanceof ServiceUnavailableException) {
+          setLoginError(exception.userFriendlyMessage);
+          showToast(exception.userFriendlyMessage, 'error', { autoClose: false });
+        }
+        else {
+          setLoginError('An unexpected error occurred. Please try again.');
+        }
+
+        showToast(exception.userFriendlyMessage || 'Login failed', 'error');
+      }
+    } finally {
+      setIsLoading(false);
+      // Reset form after 3 failed attempts
+      if (submitCountRef.current >= 3) {
+        reset();
+        submitCountRef.current = 0;
+      }
+    }
+  };
+
+  return (
+    <Container className="mt-5">
+      <Row className="justify-content-center">
+        <Col xs={12} md={6} lg={4} className="bg-white shadow rounded p-4">
+          <h2 className="text-center mb-4">Login</h2>
+          <form 
+            onSubmit={handleSubmit(onSubmit)} 
+            onChange={handleFormChange}
+            className="d-flex flex-column align-items-center"
+            noValidate
+          >
+            <Form.Group className="mb-3 w-100" controlId="formBasicUsername">
+              <Form.Label>Username</Form.Label>
+              <Form.Control
+                type="text"
+                placeholder="Enter username"
+                {...register("username", { 
+                  required: "Username is required",
+                  minLength: {
+                    value: 3,
+                    message: "Username must be at least 3 characters"
+                  },
+                  maxLength: {
+                    value: 30,
+                    message: "Username must be less than 30 characters"
+                  }
+                })}
+                isInvalid={!!errors.username || !!fieldErrors.username}
+                disabled={isDisabled}
+              />
+              <Form.Control.Feedback type="invalid">
+                {errors.username?.message || fieldErrors.username}
+              </Form.Control.Feedback>
+            </Form.Group>
+
+            <Form.Group className="mb-3 w-100 position-relative" controlId="formBasicPassword">
+              <Form.Label>Password</Form.Label>
+              <Form.Control
+                type={showPassword ? "text" : "password"}
+                placeholder="Enter password"
+                {...register("password", { 
+                  required: "Password is required", 
+                  minLength: { 
+                    value: 8, 
+                    message: "Password must be at least 8 characters" 
+                  },
+                  pattern: {
+                    value: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/,
+                    message: "Password must contain uppercase, lowercase and numbers"
+                  }
+                })}
+                isInvalid={!!errors.password || !!fieldErrors.password}
+                disabled={isDisabled}
+              />
+              <Form.Check
+                type="switch"
+                label="Show password"
+                className="position-absolute end-0 mt-1"
+                checked={showPassword}
+                onChange={() => setShowPassword(!showPassword)}
+                disabled={isDisabled}
+              />
+              <Form.Control.Feedback type="invalid">
+                {errors.password?.message || fieldErrors.password}
+              </Form.Control.Feedback>
+            </Form.Group>
+
+            {loginError && (
+              <div className="alert alert-danger w-100 text-center">
+                {loginError}
+              </div>
+            )}
+
+            {retryAfter && (
+              <div className="alert alert-warning w-100 text-center">
+                Too many attempts. Try again in {retryAfter} seconds.
+              </div>
+            )}
+
+            <Button 
+              variant="primary" 
+              type="submit" 
+              className="w-100 mb-3"
+              disabled={isLoading || isDisabled || !isDirty || !isValid}
+            >
+              {isLoading ? (
+                <>
+                  <Spinner
+                    as="span"
+                    animation="border"
+                    size="sm"
+                    role="status"
+                    aria-hidden="true"
+                    className="me-2"
+                  />
+                  Logging in...
+                </>
+              ) : 'Login'}
+            </Button>
+
+            <div className="d-flex justify-content-between w-100">
+              <Link to="/forgot-password" className="text-decoration-none">
+                Forgot password?
+              </Link>
+              <span>
+                Not registered?{' '}
+                <Link to="/register" className="text-decoration-none">
+                  Sign up
+                </Link>
+              </span>
+            </div>
+          </form>
+        </Col>
+      </Row>
+      <ToastContainer position="top-center" autoClose={5000} />
+    </Container>
+  );
+}
+
+export default Login;
